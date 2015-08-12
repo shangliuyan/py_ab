@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#coding=utf8
 
 from __future__ import division
 import sys
@@ -8,9 +8,9 @@ import threading
 import time
 import traceback
 import itertools
-from urllib2 import build_opener, urlopen, HTTPError
-
 import signal
+
+import requests
 
 keep_processing = True
 
@@ -23,12 +23,13 @@ def stop_processing(_signal, _frame):
 signal.signal(signal.SIGINT, stop_processing)
 
 class URLGetter(threading.Thread):
+
     def __init__(self, url_queue, result_queue):
         threading.Thread.__init__(self)
         self.setDaemon(True)
         self.url_queue = url_queue
         self.result_queue = result_queue
-        self.opener = build_opener()
+
     def run(self):
         while keep_processing:
             url = self.url_queue.get()
@@ -37,20 +38,31 @@ class URLGetter(threading.Thread):
             result = self.get_url(url)
             self.url_queue.task_done()
             self.result_queue.put(result)
+
     def get_url(self, url):
         start = time.time()
-        size = status = 0
         try:
-            result = self.opener.open(url)
-            size = len(result.read())
-            status = result.code
-        except HTTPError, e:
-            size = len(e.read())
-            status = e.code
+            req = requests.Request('GET', url)
+            prepared = req.prepare()
+            head_size = self.get_req_head_size(prepared)
+            session = requests.Session()
+            resp = session.send(prepared)
+            status = resp.status_code
+            html_size = len(resp.content)
+            total_size = html_size + head_size
         except:
             traceback.print_exc()
         total_time = time.time() - start
-        return Result(total_time, size, status)
+        return Result(total_time, total_size, html_size, status)
+
+    def get_req_head_size(self, req):
+        """获取HTTP HEAD size
+        """
+        raw_content = '{}\n{}\n\n{}'.format(
+            req.method + ' ' + req.url,
+            '\n'.join('{}: {}'.format(k, v) for k, v in req.headers.items()), req.body
+        )
+        return len(raw_content) 
 
 class URLGetterPool(object):
     def __init__(self, size=2):
@@ -78,13 +90,14 @@ class URLProducer(threading.Thread):
     
 
 class Result(object):
-    def __init__(self, time, size, status):
+    def __init__(self, time, total_size, html_size, status):
         self.time = time
-        self.size = size
+        self.total_size = total_size
+        self.html_size = html_size
         self.status = status
     
     def __repr__(self):
-        return 'Result(%.5f, %d, %d)' % (self.time, self.size, self.status)
+        return 'Result(%.5f, %d, %d)' % (self.time, self.total_size, self.status)
 
 class ResultStats(object):
     def __init__(self):
@@ -107,8 +120,12 @@ class ResultStats(object):
     
     @property
     def total_req_length(self):
-        return sum(r.size for r in self.results)
+        return sum(r.total_size for r in self.results)
     
+    @property
+    def html_req_length(self):
+        return sum(r.html_size for r in self.results)
+
     @property
     def avg_req_length(self):
         return self.total_req_length / len(self.results)
@@ -161,6 +178,7 @@ class WebBench(object):
         print 'Complete requests:    %d' % (len(stats.results),)
         print 'Failed requests:      %d' % (stats.failed_requests,)
         print 'Total transferred:    %d bytes' % (stats.total_req_length,)
+        print 'HTML transferred:    %d bytes' % (stats.html_req_length,)
         print 'Requests per second:  %.2f [#/sec] (mean)' % (len(stats.results)/total,)
         print 'Time per request:     %.3f [ms] (mean)' % (stats.avg_req_time*1000,)
         print 'Time per request:     %.3f [ms] (mean, across all concurrent requests)' % (
