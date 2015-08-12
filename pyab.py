@@ -20,8 +20,6 @@ def stop_processing(_signal, _frame):
     keep_processing = False
     return 0
 
-signal.signal(signal.SIGINT, stop_processing)
-
 class URLGetter(threading.Thread):
 
     def __init__(self, url_queue, result_queue):
@@ -216,4 +214,5 @@ def main():
     bench.start()
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGINT, stop_processing)
     main()
