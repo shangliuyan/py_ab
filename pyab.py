@@ -9,7 +9,7 @@ import time
 import traceback
 import itertools
 import signal
-from StringIO import StringIO
+import math
 
 import pycurl
 
@@ -22,6 +22,14 @@ def stop_processing(_signal, _frame):
     return 0
 
 class UrlConsumer(threading.Thread):
+    """Url consumer
+
+    发送请求worker
+
+    Attributes:
+        url_queue: url作业队列
+        result_queue: 结果队列
+    """
 
     def __init__(self, url_queue, result_queue):
         threading.Thread.__init__(self)
@@ -80,7 +88,12 @@ class UrlConsumer(threading.Thread):
 
             self.clear_var()
             total_time = time.time() - total_start
-            return Result(total_time, total_size, html_size, status)
+            time_dict = {}
+            time_dict["total_time"] = self.c.getinfo(pycurl.TOTAL_TIME)
+            time_dict["connect_time"] = self.c.getinfo(pycurl.CONNECT_TIME)
+            time_dict["wait_time"] = self.c.getinfo(pycurl.STARTTRANSFER_TIME)
+            time_dict["proc_time"] = time_dict["total_time"] - time_dict["connect_time"]
+            return Result(time_dict, total_size, html_size, status)
 
 
 class UrlConsumerPool(object):
@@ -112,19 +125,27 @@ class Result(object):
     """请求返回需要数据类
 
     Attributes:
+           time_dict: time dict
+               connect_time: the amount of time it took for the socket to open
+               proc_time: first byte + transfer
+               wait_time: time till first byte
+               total_time: Sum of Connect + Processing
            total_size: The total number of bytes received from the server
            html_size: The total number of document bytes received from the server 
+           status: http response status code
     """
-    def __init__(self, time, total_size, 
-            html_size, status, detail_time={}):
-        self.time = time
+    def __init__(self, time_dict, total_size, 
+            html_size, status):
+        self.total_time = time_dict["total_time"]
+        self.connect_time = time_dict["connect_time"]
+        self.proc_time = time_dict["proc_time"]
+        self.waiting_time = time_dict["wait_time"]
         self.total_size = total_size
         self.html_size = html_size
         self.status = status
-        self.detail_time = detail_time
     
-    def __repr__(self):
-        return 'Result(%.5f, %d, %d)' % (self.time, self.total_size, self.status)
+    def __str__(self):
+        return 'Result(%s, %d, %d)' % (self.time_dict, self.total_size, self.status)
 
 class ResultStats(object):
     def __init__(self):
@@ -139,7 +160,7 @@ class ResultStats(object):
     
     @property
     def total_req_time(self):
-        return sum(r.time for r in self.results)
+        return sum(r.total_time for r in self.results)
 
     @property
     def avg_req_time(self):
@@ -158,7 +179,11 @@ class ResultStats(object):
         return self.total_req_length / len(self.results)
     
     def distribution(self):
-	results = sorted(r.time for r in self.results)
+        """请求分布
+
+           return: list
+        """
+        results = sorted(r.total_time for r in self.results)
         dist = []
         n = len(results)
         for p in (50, 66, 75, 80, 90, 95, 98, 99):
@@ -168,11 +193,47 @@ class ResultStats(object):
         dist.append((100, results[-1]))
         return dist
 
-class WebBench(object):
+    def connection_times(self):
+        connect = [r.connect_time for r in self.results]
+        process = [r.proc_time for r in self.results]
+        wait = [r.waiting_time for r in self.results]
+        total = [r.total_time for r in self.results]
+        
+        square_sum = lambda l: sum(x*x for x in l)
+        # 平均数
+        mean = lambda l: sum(l)/len(l)
+        # 方差
+        deviations = lambda l, mean: [x-mean for x in l]
+        # 标准方差
+        def std_deviation(l):
+            n = len(l)
+            if n == 1:
+                return 0
+            return math.sqrt(square_sum(deviations(l, mean(l)))/(n-1))
+        # 中位数
+        median = lambda l: sorted(l)[int(len(l)//2)]
+            
+        results = []
+        for data in (connect, process, wait, total):
+            results.append((min(data), mean(data), std_deviation(data),
+                            median(data), max(data)))
+        return results
+
+
+class ApacheBench(object):
+    """apache bench 控制类
+    
+    Attributes:
+        c: concurrency, Number of multiple requests to perform at a time 
+        n: number  of requests to perform for the benchmarking session
+        url: url
+    """
+
     def __init__(self, urls, c=1, n=1):
         self.c = c
         self.n = n
         self.urls = urls
+
     def start(self):
         out = sys.stdout
         
@@ -212,6 +273,16 @@ class WebBench(object):
                                                 stats.avg_req_time*1000/self.c,)
         print 'Transfer rate:        %.2f [Kbytes/sec] received' % (stats.total_req_length/total/1024,)
         print ''
+        print 'Connection Times (ms)'
+        print '              min  mean[+/-sd] median   max'
+        names = ('Connect', 'Processing', 'Waiting', 'Total')
+        for name, data in zip(names, stats.connection_times()):
+            t_min, t_mean, t_sd, t_median, t_max = [v*1000 for v in data] # to [ms]
+            t_min, t_mean, t_median, t_max = [round(v) for v in (t_min, t_mean,
+                                              t_median, t_max)]
+            print '%-11s %5d %5d %5.1f %6d %7d' % (name+':', t_min, t_mean, t_sd,
+                                                           t_median, t_max)
+        print ''
         print 'Percentage of the requests served within a certain time (ms)'
         for percent, seconds in stats.distribution():
             print ' %3d%% %6.0f' % (percent, seconds*1024),
@@ -239,7 +310,7 @@ def main():
    	  parser.error("need the right URL(s)")
     else:
         parser.error('need one  URL(s)')
-    bench = WebBench(urls, c=options.c, n=options.n)
+    bench = ApacheBench(urls, c=options.c, n=options.n)
     bench.start()
 
 if __name__ == '__main__':
