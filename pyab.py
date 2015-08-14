@@ -9,8 +9,9 @@ import time
 import traceback
 import itertools
 import signal
+from StringIO import StringIO
 
-import requests
+import pycurl
 
 keep_processing = True
 
@@ -20,13 +21,22 @@ def stop_processing(_signal, _frame):
     keep_processing = False
     return 0
 
-class URLGetter(threading.Thread):
+class UrlConsumer(threading.Thread):
 
     def __init__(self, url_queue, result_queue):
         threading.Thread.__init__(self)
         self.setDaemon(True)
         self.url_queue = url_queue
         self.result_queue = result_queue
+        self.c = pycurl.Curl()
+        # 指定HTTP重定向的最大数
+        self.c.setopt(pycurl.MAXCONNECTS, 1)    
+        # 强制获取新的连接，即替代缓存中的连接
+        self.c.setopt(pycurl.FRESH_CONNECT, 1)
+        self.c.setopt(self.c.WRITEFUNCTION, self.set_body_size)
+        self.c.setopt(self.c.HEADERFUNCTION, self.set_head_size)
+        self.head_size = 0
+        self.body_size = 0
 
     def run(self):
         while keep_processing:
@@ -37,32 +47,43 @@ class URLGetter(threading.Thread):
             self.url_queue.task_done()
             self.result_queue.put(result)
 
+    def set_head_size(self, buf):
+        self.head_size += len(buf)
+
+    def set_body_size(self, buf):
+        self.body_size += len(buf)
+
+    def clear_var(self):
+        """恢复size变量
+        """
+        self.body_size = 0
+        self.head_size = 0
+
     def get_url(self, url):
-        start = time.time()
+        """get result from url
+
+        args:
+            url: string url
+        """
+        total_start = time.time()
+
+        self.c.setopt(pycurl.URL, url)
         try:
-            req = requests.Request('GET', url)
-            prepared = req.prepare()
-            head_size = self.get_req_head_size(prepared)
-            session = requests.Session()
-            resp = session.send(prepared)
-            status = resp.status_code
-            html_size = len(resp.content)
-            total_size = html_size + head_size
+            self.c.perform()
         except:
             traceback.print_exc()
-        total_time = time.time() - start
-        return Result(total_time, total_size, html_size, status)
+            return None
+        else:
+            status = self.c.getinfo(pycurl.RESPONSE_CODE)
+            html_size = self.body_size
+            total_size = self.body_size + self.head_size
 
-    def get_req_head_size(self, req):
-        """获取HTTP HEAD size
-        """
-        raw_content = '{}\n{}\n\n{}'.format(
-            req.method + ' ' + req.url,
-            '\n'.join('{}: {}'.format(k, v) for k, v in req.headers.items()), req.body
-        )
-        return len(raw_content) 
+            self.clear_var()
+            total_time = time.time() - total_start
+            return Result(total_time, total_size, html_size, status)
 
-class URLGetterPool(object):
+
+class UrlConsumerPool(object):
     def __init__(self, size=2):
         self.size = size
         self.url_queue = Queue.Queue(100)
@@ -70,11 +91,11 @@ class URLGetterPool(object):
         self.getter = []
     def start(self):
         for _ in xrange(self.size):
-            t = URLGetter(self.url_queue, self.result_queue)
+            t = UrlConsumer(self.url_queue, self.result_queue)
             t.start()
             self.getter.append(t)
 
-class URLProducer(threading.Thread):
+class UrlProducer(threading.Thread):
     def __init__(self, url_queue, urls, n=10):
         threading.Thread.__init__(self)
         self.setDaemon(True)
@@ -88,11 +109,19 @@ class URLProducer(threading.Thread):
     
 
 class Result(object):
-    def __init__(self, time, total_size, html_size, status):
+    """请求返回需要数据类
+
+    Attributes:
+           total_size: The total number of bytes received from the server
+           html_size: The total number of document bytes received from the server 
+    """
+    def __init__(self, time, total_size, 
+            html_size, status, detail_time={}):
         self.time = time
         self.total_size = total_size
         self.html_size = html_size
         self.status = status
+        self.detail_time = detail_time
     
     def __repr__(self):
         return 'Result(%.5f, %d, %d)' % (self.time, self.total_size, self.status)
@@ -147,12 +176,12 @@ class WebBench(object):
     def start(self):
         out = sys.stdout
         
-        pool = URLGetterPool(self.c)
+        print 'Benchmarking (be patient).....',
+        pool = UrlConsumerPool(self.c)
         pool.start()
 
-        producer = URLProducer(pool.url_queue, self.urls, n=self.n)
+        producer = UrlProducer(pool.url_queue, self.urls, n=self.n)
         
-        print 'Benchmarking (be patient).....',
         
         start = time.time()
         producer.start()
