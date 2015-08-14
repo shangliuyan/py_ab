@@ -7,4 +7,5 @@ pyab is relyed on pycurl lib.
 pip install -r requirement.txt
 
 ## usage
-python pyab.py  -c 2 -n 10 http://www.baidu.com/
+两个并发，10个请求，超时时间10s
+python pyab.py -c 2 -n 10 -t 10 http://www.baidu.com/ 

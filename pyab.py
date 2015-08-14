@@ -21,6 +21,12 @@ def stop_processing(_signal, _frame):
     keep_processing = False
     return 0
 
+def timeout_processing(_signal, _frame):
+    global keep_processing
+    print 'The processing has timeout'
+    keep_processing = False
+    return 0
+
 class UrlConsumer(threading.Thread):
     """Url consumer
 
@@ -247,13 +253,17 @@ class ApacheBench(object):
     Attributes:
         c: concurrency, Number of multiple requests to perform at a time 
         n: number  of requests to perform for the benchmarking session
+        t: timelimit, Maximum  number of seconds to spend for benchmarking. This implies a -n 50000 internally.
+           Use this to benchmark the server within a fixed total amount of time. Per default there is no timelimit.
         url: url
     """
 
-    def __init__(self, urls, c=1, n=1):
+    def __init__(self, urls, c=1, n=1, t=50000):
         self.c = c
         self.n = n
         self.urls = urls
+        signal.signal(signal.SIGALRM, timeout_processing)
+        signal.alarm(t)
 
     def start(self):
         
@@ -320,7 +330,9 @@ def main():
                       help='number of concurrent requests')
     parser.add_option('-n', None, dest='n', type='int', default=1,
                       help='total number of requests')
-    
+    parser.add_option('-t', None, dest='t', type='int', default=50000,
+                      help='timelimit, Maximum number\
+                      of seconds to spend for benchmarking')
     (options, args) = parser.parse_args()
     if len(args) == 1:
         import urlparse
@@ -331,7 +343,7 @@ def main():
    	  parser.error("need the right URL(s)")
     else:
         parser.error('need one  URL(s)')
-    bench = ApacheBench(urls, c=options.c, n=options.n)
+    bench = ApacheBench(urls, c=options.c, n=options.n, t=options.t)
     bench.start()
 
 if __name__ == '__main__':
