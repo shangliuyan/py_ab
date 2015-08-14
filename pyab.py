@@ -97,18 +97,32 @@ class UrlConsumer(threading.Thread):
 
 
 class UrlConsumerPool(object):
+    """UrlConsumer线程池
+
+    Attributes:
+        size:  
+        url_queue: url作业队列
+        result_queue: 结果队列
+    """
     def __init__(self, size=2):
         self.size = size
         self.url_queue = Queue.Queue(100)
         self.result_queue = Queue.Queue()
-        self.getter = []
+
     def start(self):
         for _ in xrange(self.size):
             t = UrlConsumer(self.url_queue, self.result_queue)
             t.start()
-            self.getter.append(t)
 
 class UrlProducer(threading.Thread):
+    """url生产类
+    相应 -n 参数产生-n指定数量url
+
+    Attributes:
+        url_queue: 生产结果存放队列
+        n: number  of requests to perform for the benchmarking session
+        url: url
+    """
     def __init__(self, url_queue, urls, n=10):
         threading.Thread.__init__(self)
         self.setDaemon(True)
@@ -148,6 +162,11 @@ class Result(object):
         return 'Result(%s, %d, %d)' % (self.time_dict, self.total_size, self.status)
 
 class ResultStats(object):
+    """结果统计汇总统计类
+
+    Attributes:
+        results: 请求结果Result列表
+    """
     def __init__(self):
         self.results = []
     
@@ -194,6 +213,8 @@ class ResultStats(object):
         return dist
 
     def connection_times(self):
+        """连接时间计算""" 
+
         connect = [r.connect_time for r in self.results]
         process = [r.proc_time for r in self.results]
         wait = [r.waiting_time for r in self.results]
@@ -235,9 +256,9 @@ class ApacheBench(object):
         self.urls = urls
 
     def start(self):
-        out = sys.stdout
         
-        print 'Benchmarking (be patient).....',
+        print 'Benchmarking (be patient).....'
+
         pool = UrlConsumerPool(self.c)
         pool.start()
 
